@@ -1264,6 +1264,41 @@ StructConverter::StructConverter(const Struct *source, const Struct *target, boo
         sc.divs(scale_factor, value);
     }
 
+    const Struct::Field *source_alpha = nullptr;
+    const Struct::Field *target_alpha = nullptr;
+    bool has_multiple_alpha_channels = false;
+    for (const Struct::Field &f : *source) {
+        if (!has_flag(f.flags, Struct::Flags::Alpha))
+            continue;
+        if (source_alpha != nullptr) {
+            has_multiple_alpha_channels = true;
+            break;
+        }
+        source_alpha = &f;
+    }
+
+    for (const Struct::Field &f : *target) {
+        if (!has_flag(f.flags, Struct::Flags::Alpha))
+            continue;
+        target_alpha = &f;
+        break;
+    }
+
+    if (source_alpha != nullptr && target_alpha != nullptr) {
+        if (source_alpha->name != target_alpha->name)
+            Throw("Internal error: source and target alpha have mismatched names!");
+    }
+
+    X86Xmm alpha, inv_alpha;
+    if (source_alpha != nullptr && target_alpha != nullptr) {
+        alpha = cc.newXmm();
+        inv_alpha = cc.newXmm();
+        X86Xmm value = sc.linearize(sc.load(source, input, source_alpha->name)).second.xmm;
+        sc.movs(inv_alpha, sc.const_(1.0));
+        sc.divs(inv_alpha, value);
+        sc.movs(alpha, value);
+    }
+
 
     for (const Struct::Field &f : *target) {
         std::pair<detail::StructCompiler::Key, detail::StructCompiler::Value> kv;
@@ -1303,6 +1338,24 @@ StructConverter::StructConverter(const Struct *source, const Struct *target, boo
             kv.second.xmm = result;
         }
 
+        uint32_t special_channels_mask = Struct::Flags::Weight | Struct::Flags::Alpha;
+        bool target_premult = has_flag(kv.first.flags, Struct::Flags::PremultipliedAlpha);
+        bool source_premult = has_flag(f.flags, Struct::Flags::PremultipliedAlpha);
+        if (source_alpha != nullptr && target_alpha != nullptr && ((kv.first.flags & special_channels_mask) == 0) &&
+            source_premult != target_premult) {
+            if (has_multiple_alpha_channels)
+                Throw("Alpha (un)premultiplication is currently not support for multi-layer images. Try converting each layer individually");
+            X86Xmm result = cc.newXmm();
+            if (kv.first.type != struct_type_v<float>)
+                kv = sc.linearize(kv);
+            if (target_premult && !source_premult) {
+                sc.muls(result, kv.second.xmm, alpha);
+                kv.second.xmm = result;
+            } else if (!target_premult && source_premult) {
+                sc.muls(result, kv.second.xmm, inv_alpha);
+                kv.second.xmm = result;
+            }
+        }
         sc.save(target, output, f, kv);
     }
 
