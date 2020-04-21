@@ -1064,6 +1064,10 @@ std::string Struct::to_string() const {
             os << ", gamma";
         if (has_flag(f.flags, Flags::Weight))
             os << ", weight";
+        if (has_flag(f.flags, Flags::Alpha))
+            os << ", alpha";
+        if (has_flag(f.flags, Flags::PremultipliedAlpha))
+            os << ", premultiplied alpha";
         if (has_flag(f.flags, Flags::Default))
             os << ", default=" << f.default_;
         if (has_flag(f.flags, Flags::Assert))
@@ -1295,6 +1299,8 @@ StructConverter::StructConverter(const Struct *source, const Struct *target, boo
         inv_alpha = cc.newXmm();
         X86Xmm value = sc.linearize(sc.load(source, input, source_alpha->name)).second.xmm;
         sc.movs(inv_alpha, sc.const_(1.0));
+
+        // TODO: Set inv_alpha to zero if value is zero
         sc.divs(inv_alpha, value);
         sc.movs(alpha, value);
     }
@@ -1339,12 +1345,13 @@ StructConverter::StructConverter(const Struct *source, const Struct *target, boo
         }
 
         uint32_t special_channels_mask = Struct::Flags::Weight | Struct::Flags::Alpha;
-        bool target_premult = has_flag(kv.first.flags, Struct::Flags::PremultipliedAlpha);
-        bool source_premult = has_flag(f.flags, Struct::Flags::PremultipliedAlpha);
-        if (source_alpha != nullptr && target_alpha != nullptr && ((kv.first.flags & special_channels_mask) == 0) &&
+        bool source_premult = has_flag(kv.first.flags, Struct::Flags::PremultipliedAlpha);
+        bool target_premult = has_flag(f.flags, Struct::Flags::PremultipliedAlpha);
+
+        if (source_alpha != nullptr && target_alpha != nullptr && ((f.flags & special_channels_mask) == 0) &&
             source_premult != target_premult) {
             if (has_multiple_alpha_channels)
-                Throw("Alpha (un)premultiplication is currently not support for multi-layer images. Try converting each layer individually");
+                Throw("Found multiple alpha channels: Alpha (un)premultiplication expects a single alpha channel");
             X86Xmm result = cc.newXmm();
             if (kv.first.type != struct_type_v<float>)
                 kv = sc.linearize(kv);
@@ -1661,9 +1668,9 @@ bool StructConverter::convert_2d(size_t width, size_t height, const void *src_, 
 
     size_t source_size = m_source->size();
     size_t target_size = m_target->size();
-    Struct::Field weight_field;
+    Struct::Field weight_field, alpha_field;
 
-    bool has_weight = false;
+    bool has_weight = false, has_alpha = false;
     std::vector<Struct::Field> assert_fields;
     for (Struct::Field f : *m_source) {
         if (has_flag(f.flags, Struct::Flags::Assert) && !m_target->has_field(f.name))
@@ -1671,6 +1678,11 @@ bool StructConverter::convert_2d(size_t width, size_t height, const void *src_, 
         if (has_flag(f.flags, Struct::Flags::Weight)) {
             weight_field = f;
             has_weight = true;
+        }
+
+        if (has_flag(f.flags, Struct::Flags::Alpha)) {
+            alpha_field = f;
+            has_alpha = true;
         }
     }
     for (const Struct::Field &f : *m_target) {
