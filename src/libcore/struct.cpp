@@ -1301,6 +1301,10 @@ StructConverter::StructConverter(const Struct *source, const Struct *target, boo
         sc.movs(inv_alpha, sc.const_(1.0));
 
         // TODO: Set inv_alpha to zero if value is zero
+        //sc.ucomis(value, sc.const_(0.0));
+        // cc.fcmovnb(value, sc.const_(0.0));
+        //cc.cmovss(value, value);
+
         sc.divs(inv_alpha, value);
         sc.movs(alpha, value);
     }
@@ -1670,7 +1674,7 @@ bool StructConverter::convert_2d(size_t width, size_t height, const void *src_, 
     size_t target_size = m_target->size();
     Struct::Field weight_field, alpha_field;
 
-    bool has_weight = false, has_alpha = false;
+    bool has_weight = false, has_alpha = false, has_multiple_alpha_channels = false;
     std::vector<Struct::Field> assert_fields;
     for (Struct::Field f : *m_source) {
         if (has_flag(f.flags, Struct::Flags::Assert) && !m_target->has_field(f.name))
@@ -1679,8 +1683,8 @@ bool StructConverter::convert_2d(size_t width, size_t height, const void *src_, 
             weight_field = f;
             has_weight = true;
         }
-
         if (has_flag(f.flags, Struct::Flags::Alpha)) {
+            has_multiple_alpha_channels |= has_alpha;
             alpha_field = f;
             has_alpha = true;
         }
@@ -1708,6 +1712,15 @@ bool StructConverter::convert_2d(size_t width, size_t height, const void *src_, 
                     return false;
                 linearize(value);
                 inv_weight = 1.f / value.f;
+            }
+            Float alpha = 1.f, inv_alpha = 1.f;
+            if (has_alpha) {
+                Value value;
+                if (!load(src, alpha_field, value))
+                    return false;
+                linearize(value);
+                alpha = value.f;
+                inv_alpha = alpha > 0 ? 1.f / alpha : 0.f;
             }
 
             for (const Struct::Field &f : *m_target) {
@@ -1745,6 +1758,22 @@ bool StructConverter::convert_2d(size_t width, size_t height, const void *src_, 
                 if (has_weight)
                     value.f *= inv_weight;
 
+
+                uint32_t special_channels_mask = Struct::Flags::Weight | Struct::Flags::Alpha;
+                bool source_premult = has_flag(value.flags, Struct::Flags::PremultipliedAlpha);
+                bool target_premult = has_flag(f.flags, Struct::Flags::PremultipliedAlpha);
+                if (has_alpha && ((f.flags & special_channels_mask) == 0) &&
+                    source_premult != target_premult && f.blend.empty()) {
+                    linearize(value);
+                    if (has_multiple_alpha_channels)
+                        Throw("Found multiple alpha channels: Alpha (un)premultiplication expects a single alpha channel");
+
+                    if (target_premult && !source_premult) {
+                        value.f *= alpha;
+                    } else if (!target_premult && source_premult) {
+                        value.f *= inv_alpha;
+                    }
+                }
                 save(dest, f, value, x, y);
             }
 

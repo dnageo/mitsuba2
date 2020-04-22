@@ -405,6 +405,7 @@ def test17_alpha_2():
         .append('alpha2', Struct.Type.Float32, Struct.Flags.Alpha)
     with pytest.raises(RuntimeError):
         s = StructConverter(src_struct, dst_struct)
+        check_conversion(s, '@fff', '@fff', (0.5, 0.8, 0.6))
 
 def test18_alpha_3():
     """Tests that multiple alpha channels are allowed if no conversion is requested"""
